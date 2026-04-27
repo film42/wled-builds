@@ -146,52 +146,29 @@ def patch_ini(content: str) -> PatchResult:
 
 
 def get_default_envs(ini_content: str) -> list[str]:
-    """Extract the default_envs list from a PlatformIO INI.
+    """Extract default_envs from a PlatformIO INI string using configparser.
 
-    Handles QuinLED-style comments interleaved in the value block.
-    Falls back to listing all [env:*] sections if no default_envs is found.
+    Uses RawConfigParser with inline comments disabled so that PlatformIO's
+    ${section.key} interpolation and # inside values are left alone.
     """
-    in_platformio = False
-    in_default_envs = False
-    envs: list[str] = []
+    import configparser
 
-    for line in ini_content.split("\n"):
-        stripped = line.strip()
+    parser = configparser.RawConfigParser(
+        inline_comment_prefixes=(),   # don't eat # or ; mid-value
+        comment_prefixes=("#", ";"),  # only full-line comments
+    )
+    parser.optionxform = str  # preserve case (PlatformIO is case-sensitive)
 
-        if stripped.startswith("["):
-            if stripped.lower() == "[platformio]":
-                in_platformio = True
-                in_default_envs = False
-            else:
-                if in_platformio:
-                    break
-                in_platformio = False
-            continue
+    try:
+        parser.read_string(ini_content)
+    except configparser.Error as e:
+        raise ValueError(f"Failed to parse INI: {e}") from e
 
-        if not in_platformio:
-            continue
+    if parser.has_option("platformio", "default_envs"):
+        raw = parser.get("platformio", "default_envs")
+        # May be comma-separated, newline-separated, or both
+        names = raw.replace(",", "\n").split("\n")
+        return [n.strip() for n in names if n.strip()]
 
-        if re.match(r"default_envs\s*=", stripped):
-            in_default_envs = True
-            _, _, value = stripped.partition("=")
-            value = value.strip()
-            if value and not value.startswith("#"):
-                envs.append(value)
-            continue
-
-        if in_default_envs:
-            if stripped.startswith("#") or stripped.startswith(";") or not stripped:
-                continue  # skip comments and blank lines in the value block
-            if line[0].isspace():
-                # Continuation line — strip inline comments
-                value = re.split(r"\s+#", stripped)[0].strip()
-                if value:
-                    envs.append(value)
-            else:
-                # Non-indented non-comment line = new key, value block is over
-                in_default_envs = False
-
-    if not envs:
-        envs = re.findall(r"^\[env:(.+?)\]", ini_content, re.MULTILINE)
-
-    return envs
+    # Fallback: all [env:*] sections
+    return [s[4:] for s in parser.sections() if s.startswith("env:")]
