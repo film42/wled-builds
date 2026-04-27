@@ -1,0 +1,96 @@
+name: Build WLED Firmware
+
+on:
+  # Manual: build a specific version
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "WLED version to build (e.g. 0.15.4), or 'new' to build all missing"
+        required: true
+        type: string
+        default: "new"
+      source:
+        description: "Target set (ignored when version is 'new')"
+        required: true
+        type: choice
+        options:
+          - all
+          - generic
+          - quinled
+        default: "all"
+
+  # Automated: check daily for new upstream releases
+  schedule:
+    - cron: "0 6 * * *"  # 6am UTC daily
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install PlatformIO
+        run: uv run pip install platformio
+
+      - name: Build firmware
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version || 'new' }}"
+          if [ "$VERSION" = "new" ]; then
+            uv run wled-build build-new --output build_output
+          else
+            uv run wled-build build "$VERSION" \
+              --source "${{ inputs.source || 'all' }}" \
+              --output build_output
+          fi
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: firmware-${{ inputs.version || 'new' }}-${{ github.run_id }}
+          path: build_output/**/*.bin
+          if-no-files-found: warn
+
+      - name: Upload audit trail
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-${{ inputs.version || 'new' }}-${{ github.run_id }}
+          path: |
+            build_output/**/audit/
+            build_output/**/logs/
+            build_output/**/checksums.sha256
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for checksum_file in build_output/*/checksums.sha256; do
+            if [ -f "$checksum_file" ]; then
+              version_dir=$(dirname "$checksum_file")
+              version=$(basename "$version_dir")
+              echo "### $version" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat "$checksum_file" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
