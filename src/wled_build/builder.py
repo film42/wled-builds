@@ -185,19 +185,23 @@ def _build_generic(
     print(f"Patched envs (WG added): {', '.join(result.patched_envs)}")
     print(f"Skipped envs (ESP8266 or already has WG): {', '.join(result.skipped_envs)}")
 
-    envs = get_default_envs(result.patched)
+    all_envs = get_default_envs(result.patched)
+    # Only build ESP32 envs — ESP8266 can't run WireGuard, which is the whole point
+    envs = [e for e in all_envs if e in result.patched_envs]
+    skipped = [e for e in all_envs if e not in result.patched_envs]
+    if skipped:
+        print(f"Skipping ESP8266 envs (no WG support): {', '.join(skipped)}")
     records: list[BuildRecord] = []
 
     for env_name in envs:
         binary_path = _run_single_build(wled_dir, env_name, output_dir, log_dir)
-        has_wg = env_name in result.patched_envs
         records.append(BuildRecord(
             version=version,
             env_name=env_name,
             source="generic",
             wled_commit=wled_commit,
             quinled_commit=None,
-            wireguard=has_wg,
+            wireguard=True,
             original_ini_sha256=sha256_str(result.original),
             patched_ini_sha256=sha256_str(result.patched),
             binary_sha256=sha256_file(binary_path) if binary_path else None,
