@@ -44,6 +44,7 @@ def attest_file(file_path: Path) -> bool:
         print(f"  Attestation: skipped (not running in GitHub Actions)")
         return False
 
+    from sigstore.models import ClientTrustConfig
     from sigstore.oidc import IdentityToken
     from sigstore.sign import SigningContext
 
@@ -52,7 +53,8 @@ def attest_file(file_path: Path) -> bool:
     identity_token = IdentityToken(raw_token)
 
     # Step 2: Sign the file with sigstore (Fulcio cert + Rekor log)
-    signing_ctx = SigningContext.production()
+    trust_config = ClientTrustConfig.production()
+    signing_ctx = SigningContext.from_trust_config(trust_config)
     with signing_ctx.signer(identity_token) as signer:
         bundle = signer.sign_artifact(file_path)
 
