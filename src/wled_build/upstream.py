@@ -13,18 +13,33 @@ QUINLED_REPO = "intermittech/QuinLED-Firmware"
 GITHUB_API = "https://api.github.com"
 
 
-def _headers() -> dict[str, str]:
-    """Build GitHub API headers, with auth if token is available."""
-    headers = {"Accept": "application/vnd.github+json"}
+class _RedactedAuth(requests.auth.AuthBase):
+    """Auth handler that keeps the token out of exception tracebacks."""
+
+    def __init__(self, token: str):
+        self._token = token
+
+    def __call__(self, r):
+        r.headers["Authorization"] = f"Bearer {self._token}"
+        return r
+
+    def __repr__(self):
+        return "RedactedAuth(***)"
+
+
+def _session() -> requests.Session:
+    """Create a session with auth that won't leak tokens in tracebacks."""
+    s = requests.Session()
+    s.headers["Accept"] = "application/vnd.github+json"
     token = os.environ.get("GITHUB_TOKEN")
     if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+        s.auth = _RedactedAuth(token)
+    return s
 
 
 def _get_json(url: str, **kwargs) -> requests.Response:
     """Make an authenticated GET request to the GitHub API."""
-    resp = requests.get(url, headers=_headers(), timeout=30, **kwargs)
+    resp = _session().get(url, timeout=30, **kwargs)
     resp.raise_for_status()
     return resp
 

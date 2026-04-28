@@ -1,7 +1,6 @@
 name: Build WLED Firmware
 
 on:
-  # Manual: build a specific version
   workflow_dispatch:
     inputs:
       version:
@@ -19,9 +18,13 @@ on:
           - quinled
         default: "all"
 
-  # Automated: check daily for new upstream releases
   schedule:
-    - cron: "0 6 * * *"  # 6am UTC daily
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -46,9 +49,14 @@ jobs:
       - name: Install PlatformIO
         run: uv run pip install platformio
 
-      - name: Build firmware
+      # Per-env: build → attest → publish (all in Python)
+      - name: Build, attest, and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           VERSION="${{ inputs.version || 'new' }}"
           if [ "$VERSION" = "new" ]; then
@@ -59,38 +67,20 @@ jobs:
               --output build_output
           fi
 
-      - name: Upload binaries
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: firmware-${{ inputs.version || 'new' }}-${{ github.run_id }}
-          path: build_output/**/*.bin
-          if-no-files-found: warn
-
       - name: Upload audit trail
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: audit-${{ inputs.version || 'new' }}-${{ github.run_id }}
+          name: audit-${{ github.run_id }}
           path: |
             build_output/**/audit/
             build_output/**/logs/
-            build_output/**/checksums.sha256
           if-no-files-found: warn
 
       - name: Summary
         if: always()
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for checksum_file in build_output/*/checksums.sha256; do
-            if [ -f "$checksum_file" ]; then
-              version_dir=$(dirname "$checksum_file")
-              version=$(basename "$version_dir")
-              echo "### $version" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              cat "$checksum_file" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          find build_output -name "*.bin" -exec sh -c 'echo "$(sha256sum "$1" | cut -d" " -f1)  $(basename "$1")"' _ {} \; | sort >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No binaries"
+          echo '```' >> $GITHUB_STEP_SUMMARY

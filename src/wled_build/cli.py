@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 from .builder import build_version
-from .manifest import load_manifest
 from .upstream import get_latest_stable, get_quinled_releases, get_wled_releases, WLED_REPO, QUINLED_REPO
 
 # Only build versions >= this. Older versions predate ESP32 WireGuard support.
@@ -18,13 +17,11 @@ def _parse_version_tuple(v: str) -> tuple:
     Handles formats like "0.15.4", "0.15.0-b2", "16.0.0-beta", "0.15.0-rc.1".
     Stable releases sort after pre-releases of the same base version.
     """
-    # Split off pre-release suffix
     match = re.match(r"^(\d+(?:\.\d+)*)(?:[.-](.+))?$", v)
     if not match:
         return (0,)
     base = tuple(int(x) for x in match.group(1).split("."))
     pre = match.group(2)
-    # Stable (no suffix) sorts after any pre-release
     if pre is None:
         return (*base, 1, "")
     return (*base, 0, pre)
@@ -36,15 +33,13 @@ def _version_gte(version: str, min_version: str) -> bool:
 
 
 def cmd_check(args):
-    """Check which upstream releases we haven't built yet."""
-    manifest_path = Path(args.manifest)
-    manifest = load_manifest(manifest_path)
-    min_version = args.min_version
+    """Check which upstream releases we haven't built yet.
 
-    # Build a set of (version, source) tuples we've already built
-    built: set[tuple[str, str]] = set()
-    for entry in manifest:
-        built.add((entry["version"], entry["source"]))
+    Uses GitHub Release existence as the source of truth for what's been built,
+    not a local manifest file.
+    """
+    from .publish import get_or_create_release, get_existing_assets
+    min_version = args.min_version
 
     print("Fetching upstream releases...")
     wled_releases = get_wled_releases()
@@ -58,20 +53,42 @@ def cmd_check(args):
 
     quinled_versions = {r["version"] for r in quinled_releases}
 
-    missing: list[dict] = []
+    versions_to_check: list[dict] = []
     for r in wled_releases:
         v = r["version"]
-        is_pre = r["prerelease"]
-        tag = "pre-release" if is_pre else "stable"
-
         if not _version_gte(v, min_version):
             continue
+        has_quinled = v in quinled_versions
+        tag = "pre-release" if r["prerelease"] else "stable"
+        versions_to_check.append({"version": v, "tag": tag, "has_quinled": has_quinled})
 
-        if (v, "generic") not in built:
-            missing.append({"version": v, "source": "generic", "tag": tag})
+    if not versions_to_check:
+        print(f"\nNo upstream releases >= {min_version}.")
+        return
 
-        if v in quinled_versions and (v, "quinled") not in built:
-            missing.append({"version": v, "source": "quinled", "tag": tag})
+    missing: list[dict] = []
+    for vc in versions_to_check:
+        v = vc["version"]
+        # A version needs building if it has no release at all on our repo,
+        # or if it's missing assets. For the check command, just see if the
+        # release tag exists.
+        from .publish import GITHUB_API, REPO, _session
+        resp = _session().get(
+            f"{GITHUB_API}/repos/{REPO}/releases/tags/v{v}",
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            assets = {a["name"] for a in resp.json().get("assets", [])}
+            has_generic = any(a.startswith("generic_") for a in assets)
+            has_quinled_assets = any(a.startswith("quinled_") for a in assets)
+        else:
+            has_generic = False
+            has_quinled_assets = False
+
+        if not has_generic:
+            missing.append({"version": v, "source": "generic", "tag": vc["tag"]})
+        if vc["has_quinled"] and not has_quinled_assets:
+            missing.append({"version": v, "source": "quinled", "tag": vc["tag"]})
 
     if not missing:
         print(f"\nAll upstream releases >= {min_version} have been built.")
@@ -97,14 +114,8 @@ def cmd_build(args):
 
 def cmd_build_new(args):
     """Build any upstream releases >= min-version that we haven't built yet."""
-    manifest_path = Path(args.manifest)
-    manifest = load_manifest(manifest_path)
     output = Path(args.output)
     min_version = args.min_version
-
-    built: set[tuple[str, str]] = set()
-    for entry in manifest:
-        built.add((entry["version"], entry["source"]))
 
     print("Fetching upstream releases...")
     wled_releases = get_wled_releases()
@@ -114,32 +125,31 @@ def cmd_build_new(args):
     wled_latest = get_latest_stable(WLED_REPO)
     print(f"  WLED latest stable: {wled_latest['version'] if wled_latest else '?'}")
 
-    # Collect all (version, source) pairs we need to build
+    # Build each version — the builder itself checks release assets to skip
+    # envs that are already published, so we just need to decide which
+    # (version, source) pairs to attempt.
     to_build: list[tuple[str, str]] = []
     for r in wled_releases:
         v = r["version"]
         if not _version_gte(v, min_version):
             continue
-
-        if (v, "generic") not in built:
-            to_build.append((v, "generic"))
-        if v in quinled_versions and (v, "quinled") not in built:
+        to_build.append((v, "generic"))
+        if v in quinled_versions:
             to_build.append((v, "quinled"))
 
-    # Sort by version so we build oldest first
     to_build.sort(key=lambda x: _parse_version_tuple(x[0]))
 
     if not to_build:
-        print(f"\nNothing to build — all releases >= {min_version} are up to date.")
+        print(f"\nNo releases >= {min_version} found.")
         return
 
-    print(f"\nWill build {len(to_build)} target(s):")
+    print(f"\nWill attempt {len(to_build)} build(s) (already-published envs will be skipped):")
     for v, source in to_build:
         print(f"  {v:>14s}  {source}")
 
     for v, source in to_build:
         print(f"\n{'#' * 60}")
-        print(f"# Building {source} targets for {v}")
+        print(f"# {source} targets for {v}")
         print(f"{'#' * 60}")
         build_version(version=v, output_base=output, source=source)
 
@@ -155,10 +165,6 @@ def main():
     p_check = sub.add_parser(
         "check",
         help="Show upstream releases not yet in our manifest",
-    )
-    p_check.add_argument(
-        "--manifest", default="manifest.json",
-        help="Path to manifest.json (default: manifest.json)",
     )
     p_check.add_argument(
         "--min-version", default=DEFAULT_MIN_VERSION,
@@ -189,10 +195,6 @@ def main():
     p_new = sub.add_parser(
         "build-new",
         help="Build any upstream releases we haven't built yet (stable + beta)",
-    )
-    p_new.add_argument(
-        "--manifest", default="manifest.json",
-        help="Path to manifest.json (default: manifest.json)",
     )
     p_new.add_argument(
         "--output", default="build_output",

@@ -1,7 +1,10 @@
-"""Clone WLED, apply WireGuard patches, build firmware, and collect artifacts.
+"""Clone WLED, apply WireGuard patches, and build firmware.
 
-Each build is fully isolated in a temp directory. The audit trail captures
-original and patched INI files, build logs, and binary checksums.
+Flow:
+1. Check if asset already exists on the GitHub Release — skip build if so
+2. Build with PlatformIO, save binary + build log to output dir
+3. (Workflow attests binaries via actions/attest-build-provenance)
+4. Publish step uploads attested binaries to GitHub Release + R2
 """
 
 import hashlib
@@ -11,8 +14,15 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .audit import BuildRecord, write_build_record
 from .patcher import get_default_envs, patch_ini
+from .attest import attest_file
+from .publish import (
+    asset_filename,
+    get_existing_assets,
+    get_or_create_release,
+    upload_release_asset,
+    upload_to_r2,
+)
 from .upstream import (
     fetch_quinled_override,
     get_quinled_commit_sha,
@@ -55,11 +65,7 @@ def clone_wled(version: str, parent_dir: Path) -> Path:
 
 
 def _find_firmware_binary(wled_dir: Path, env_name: str) -> Path | None:
-    """Locate the built firmware binary for an environment.
-
-    WLED's extra_scripts put release binaries in build_output/release/.
-    Falls back to PlatformIO's default output location.
-    """
+    """Locate the built firmware binary for an environment."""
     release_dir = wled_dir / "build_output" / "release"
     if release_dir.exists():
         bins = list(release_dir.glob("*.bin"))
@@ -73,21 +79,44 @@ def _find_firmware_binary(wled_dir: Path, env_name: str) -> Path | None:
     return None
 
 
+def _write_build_log_header(
+    log_file,
+    version: str,
+    source: str,
+    env_name: str,
+    wled_commit: str,
+    quinled_commit: str | None,
+):
+    """Write provenance header to the build log before PlatformIO output."""
+    log_file.write(f"Source: wled/WLED @ v{version} ({wled_commit})\n")
+    log_file.write(f"  https://github.com/wled/WLED/tree/{wled_commit}\n")
+    if quinled_commit:
+        log_file.write(f"Config: intermittech/QuinLED-Firmware @ v{version} ({quinled_commit})\n")
+        log_file.write(f"  https://github.com/intermittech/QuinLED-Firmware/tree/{quinled_commit}\n")
+    log_file.write(f"Environment: {env_name}\n")
+    log_file.write(f"Vendor: {source}\n")
+    log_file.write(f"WireGuard: yes\n")
+    log_file.write(f"Built: {datetime.now(timezone.utc).isoformat()}\n")
+    log_file.write(f"---\n\n")
+
+
 def _run_single_build(
     wled_dir: Path,
     env_name: str,
-    output_dir: Path,
-    log_dir: Path,
+    log_path: Path,
+    version: str,
+    source: str,
+    wled_commit: str,
+    quinled_commit: str | None,
 ) -> Path | None:
-    """Run PlatformIO build for one environment, streaming output to both
-    the terminal and a log file for the audit trail."""
+    """Build one environment, streaming output to terminal and log file."""
     print(f"\n{'=' * 60}")
     print(f"Building: {env_name}")
     print(f"{'=' * 60}")
 
-    log_path = log_dir / f"build_{env_name}.log"
-
     with open(log_path, "w") as log_file:
+        _write_build_log_header(log_file, version, source, env_name, wled_commit, quinled_commit)
+
         process = subprocess.Popen(
             ["pio", "run", "-e", env_name],
             cwd=str(wled_dir),
@@ -109,11 +138,9 @@ def _run_single_build(
         print(f"WARNING: No binary found for {env_name}")
         return None
 
-    dest = output_dir / binary.name
-    dest.write_bytes(binary.read_bytes())
-    print(f"OK: {dest.name} ({dest.stat().st_size:,} bytes)")
+    print(f"OK: {binary.name} ({binary.stat().st_size:,} bytes)")
 
-    # Clean build artifacts to save disk for the next environment
+    # Clean build artifacts to save disk for next env
     pio_build = wled_dir / ".pio" / "build" / env_name
     if pio_build.exists():
         subprocess.run(["rm", "-rf", str(pio_build)], check=False)
@@ -122,7 +149,7 @@ def _run_single_build(
         for f in release_dir.iterdir():
             f.unlink()
 
-    return dest
+    return binary
 
 
 def build_version(
@@ -130,12 +157,9 @@ def build_version(
     output_base: Path,
     source: str = "all",
 ):
-    """Build WLED firmware for a version.
+    """Build and publish WLED firmware for a version.
 
-    Args:
-        version: WLED version string (e.g. "0.15.4")
-        output_base: Root directory for build output
-        source: "generic", "quinled", or "all"
+    For each env: check if already published, build if not, upload everywhere.
     """
     output_dir = output_base / version
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -147,142 +171,128 @@ def build_version(
     wled_commit = get_wled_commit_sha(version)
     print(f"WLED v{version} commit: {wled_commit}")
 
+    # Get or create the GitHub Release for this version
+    release = get_or_create_release(version)
+    existing_assets = get_existing_assets(release)
+    print(f"Existing release assets: {len(existing_assets)}")
+
     with tempfile.TemporaryDirectory(prefix="wled-build-") as tmp:
         tmp_path = Path(tmp)
 
         if source in ("generic", "all"):
-            _build_generic(version, wled_commit, tmp_path, output_dir, log_dir, audit_dir)
+            _build_source(
+                version=version,
+                source_name="generic",
+                wled_commit=wled_commit,
+                quinled_commit=None,
+                tmp_path=tmp_path,
+                output_dir=output_dir,
+                log_dir=log_dir,
+                audit_dir=audit_dir,
+                release=release,
+                existing_assets=existing_assets,
+            )
 
         if source in ("quinled", "all"):
-            _build_quinled(version, wled_commit, tmp_path, output_dir, log_dir, audit_dir)
+            quinled_commit = get_quinled_commit_sha(version)
+            if quinled_commit is None:
+                print(f"\nNo QuinLED release for v{version}, skipping.")
+            else:
+                _build_source(
+                    version=version,
+                    source_name="quinled",
+                    wled_commit=wled_commit,
+                    quinled_commit=quinled_commit,
+                    tmp_path=tmp_path,
+                    output_dir=output_dir,
+                    log_dir=log_dir,
+                    audit_dir=audit_dir,
+                    release=release,
+                    existing_assets=existing_assets,
+                )
 
-    _write_checksums(output_dir)
     print(f"\nBuild complete. Output in: {output_dir}")
 
 
-def _build_generic(
+def _build_source(
     version: str,
+    source_name: str,
     wled_commit: str,
+    quinled_commit: str | None,
     tmp_path: Path,
     output_dir: Path,
     log_dir: Path,
     audit_dir: Path,
+    release: dict,
+    existing_assets: set[str],
 ):
-    """Build generic WLED targets with WireGuard patched in."""
-    print("\n--- Generic WLED builds ---")
-    wled_dir = clone_wled(version, tmp_path / "generic")
+    """Build all envs for a source (generic or quinled)."""
+    print(f"\n--- {source_name} builds ---")
 
-    ini_path = wled_dir / "platformio.ini"
-    ini_content = ini_path.read_text()
-    result = patch_ini(ini_content)
+    wled_dir = clone_wled(version, tmp_path / source_name)
 
-    # Audit: save both original and patched INI
-    (audit_dir / "generic_original_platformio.ini").write_text(result.original)
-    (audit_dir / "generic_patched_platformio.ini").write_text(result.patched)
-
-    ini_path.write_text(result.patched)
+    # Get and patch the INI
+    if source_name == "quinled":
+        override_content = fetch_quinled_override(version)
+        if override_content is None:
+            print(f"No QuinLED platformio_override.ini found for v{version}.")
+            return
+        result = patch_ini(override_content)
+        (audit_dir / "quinled_original_override.ini").write_text(result.original)
+        (audit_dir / "quinled_patched_override.ini").write_text(result.patched)
+        (wled_dir / "platformio_override.ini").write_text(result.patched)
+    else:
+        ini_path = wled_dir / "platformio.ini"
+        ini_content = ini_path.read_text()
+        result = patch_ini(ini_content)
+        (audit_dir / "generic_original_platformio.ini").write_text(result.original)
+        (audit_dir / "generic_patched_platformio.ini").write_text(result.patched)
+        ini_path.write_text(result.patched)
 
     print(f"Patched envs (WG added): {', '.join(result.patched_envs)}")
-    print(f"Skipped envs (ESP8266 or already has WG): {', '.join(result.skipped_envs)}")
+    print(f"Skipped envs: {', '.join(result.skipped_envs)}")
 
+    # Only build ESP32 envs (the ones that got WG patched in)
     all_envs = get_default_envs(result.patched)
-    # Only build ESP32 envs — ESP8266 can't run WireGuard, which is the whole point
     envs = [e for e in all_envs if e in result.patched_envs]
-    skipped = [e for e in all_envs if e not in result.patched_envs]
-    if skipped:
-        print(f"Skipping ESP8266 envs (no WG support): {', '.join(skipped)}")
-    records: list[BuildRecord] = []
+    skipped_8266 = [e for e in all_envs if e not in result.patched_envs]
+    if skipped_8266:
+        print(f"Skipping non-ESP32 envs: {', '.join(skipped_8266)}")
 
     for env_name in envs:
-        binary_path = _run_single_build(wled_dir, env_name, output_dir, log_dir)
-        records.append(BuildRecord(
-            version=version,
-            env_name=env_name,
-            source="generic",
-            wled_commit=wled_commit,
-            quinled_commit=None,
-            wireguard=True,
-            original_ini_sha256=sha256_str(result.original),
-            patched_ini_sha256=sha256_str(result.patched),
-            binary_sha256=sha256_file(binary_path) if binary_path else None,
-            binary_filename=binary_path.name if binary_path else None,
-            binary_size=binary_path.stat().st_size if binary_path else None,
-            build_success=binary_path is not None,
-            build_log=f"logs/build_{env_name}.log",
-            built_at=datetime.now(timezone.utc).isoformat(),
-        ))
+        bin_asset = asset_filename(source_name, version, env_name, ".bin")
+        if bin_asset in existing_assets:
+            print(f"\nSkipping {env_name} — {bin_asset} already in release")
+            continue
 
-    write_build_record(audit_dir / "generic_builds.json", records)
-    return records
+        log_path = log_dir / f"{source_name}_{env_name}.build_log.txt"
+        binary_path = _run_single_build(
+            wled_dir, env_name, log_path,
+            version, source_name, wled_commit, quinled_commit,
+        )
 
+        if binary_path is None:
+            print(f"  Build failed for {env_name}, skipping")
+            continue
 
-def _build_quinled(
-    version: str,
-    wled_commit: str,
-    tmp_path: Path,
-    output_dir: Path,
-    log_dir: Path,
-    audit_dir: Path,
-):
-    """Build QuinLED targets with WireGuard patched in."""
-    print("\n--- QuinLED builds ---")
+        # Copy binary to output_dir with the release asset name
+        dest = output_dir / asset_filename(source_name, version, env_name, ".bin")
+        dest.write_bytes(binary_path.read_bytes())
+        digest = sha256_file(dest)
+        print(f"  Saved: {dest.name} ({dest.stat().st_size:,} bytes)")
+        print(f"  SHA256: {digest}")
 
-    override_content = fetch_quinled_override(version)
-    if override_content is None:
-        print(f"No QuinLED platformio_override.ini found for v{version}, skipping.")
-        return []
+        # Attest BEFORE publishing — never serve an unattested binary
+        attest_file(dest)
 
-    quinled_commit = get_quinled_commit_sha(version)
-    print(f"QuinLED v{version} commit: {quinled_commit}")
+        # Publish to GitHub Release + R2
+        bin_name = asset_filename(source_name, version, env_name, ".bin")
+        log_name = asset_filename(source_name, version, env_name, ".build_log.txt")
 
-    wled_dir = clone_wled(version, tmp_path / "quinled")
+        if upload_release_asset(release, str(dest), bin_name):
+            print(f"  Release: uploaded {bin_name}")
+        upload_release_asset(release, str(log_path), log_name)
 
-    result = patch_ini(override_content)
-
-    # Audit: save both original and patched override
-    (audit_dir / "quinled_original_override.ini").write_text(result.original)
-    (audit_dir / "quinled_patched_override.ini").write_text(result.patched)
-
-    (wled_dir / "platformio_override.ini").write_text(result.patched)
-
-    print(f"Patched envs (WG added): {', '.join(result.patched_envs)}")
-    print(f"Skipped envs (ESP8266 or already has WG): {', '.join(result.skipped_envs)}")
-
-    envs = get_default_envs(result.patched)
-    records: list[BuildRecord] = []
-
-    for env_name in envs:
-        binary_path = _run_single_build(wled_dir, env_name, output_dir, log_dir)
-        has_wg = env_name in result.patched_envs
-        records.append(BuildRecord(
-            version=version,
-            env_name=env_name,
-            source="quinled",
-            wled_commit=wled_commit,
-            quinled_commit=quinled_commit,
-            wireguard=has_wg,
-            original_ini_sha256=sha256_str(result.original),
-            patched_ini_sha256=sha256_str(result.patched),
-            binary_sha256=sha256_file(binary_path) if binary_path else None,
-            binary_filename=binary_path.name if binary_path else None,
-            binary_size=binary_path.stat().st_size if binary_path else None,
-            build_success=binary_path is not None,
-            build_log=f"logs/build_{env_name}.log",
-            built_at=datetime.now(timezone.utc).isoformat(),
-        ))
-
-    write_build_record(audit_dir / "quinled_builds.json", records)
-    return records
-
-
-def _write_checksums(output_dir: Path):
-    """Write a SHA-256 checksums file for all binaries in the output directory."""
-    bins = sorted(output_dir.glob("*.bin"))
-    if not bins:
-        return
-    checksum_path = output_dir / "checksums.sha256"
-    with open(checksum_path, "w") as f:
-        for bin_file in bins:
-            digest = sha256_file(bin_file)
-            f.write(f"{digest}  {bin_file.name}\n")
-    print(f"Checksums written: {checksum_path} ({len(bins)} files)")
+        r2_prefix = f"v{version}/{source_name}"
+        upload_to_r2(str(dest), f"{r2_prefix}/{env_name}.bin")
+        upload_to_r2(str(log_path), f"{r2_prefix}/{env_name}.build_log.txt")
