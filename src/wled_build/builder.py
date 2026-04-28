@@ -262,6 +262,7 @@ def _build_source(
     if skipped:
         print(f"Skipping: {', '.join(skipped)}")
 
+    failed: list[str] = []
     for env_name in envs:
         bin_asset = asset_filename(source_name, version, env_name, ".bin")
         if bin_asset in existing_assets:
@@ -271,18 +272,24 @@ def _build_source(
         log_path = log_dir / f"{source_name}_{env_name}.build_log.txt"
         dest = output_dir / asset_filename(source_name, version, env_name, ".bin")
 
-        _run_single_build(
-            wled_dir, env_name, dest, log_path,
-            version, source_name, wled_commit, quinled_commit,
-        )
+        # Build — if pio fails, log it and move on to next env
+        try:
+            _run_single_build(
+                wled_dir, env_name, dest, log_path,
+                version, source_name, wled_commit, quinled_commit,
+            )
+        except RuntimeError as e:
+            print(f"\n  BUILD FAILED: {env_name} — {e}")
+            failed.append(env_name)
+            continue
 
         digest = sha256_file(dest)
         print(f"  SHA256: {digest}")
 
-        # Attest BEFORE publishing — never serve an unattested binary
+        # Attest BEFORE publishing — never serve an unattested binary.
+        # Attest/publish failures are fatal (not build issues, something is wrong).
         attest_file(dest)
 
-        # Publish to GitHub Release + R2
         bin_name = asset_filename(source_name, version, env_name, ".bin")
         log_name = asset_filename(source_name, version, env_name, ".build_log.txt")
 
@@ -293,3 +300,7 @@ def _build_source(
         r2_prefix = f"v{version}/{source_name}"
         upload_to_r2(str(dest), f"{r2_prefix}/{env_name}.bin")
         upload_to_r2(str(log_path), f"{r2_prefix}/{env_name}.build_log.txt")
+
+    if failed:
+        print(f"\n{len(failed)} env(s) failed to build: {', '.join(failed)}")
+        print("Attest/publish failures are still fatal.")
