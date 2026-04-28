@@ -250,12 +250,17 @@ def _build_source(
     print(f"Patched envs (WG added): {', '.join(result.patched_envs)}")
     print(f"Skipped envs: {', '.join(result.skipped_envs)}")
 
-    # Only build ESP32 envs (the ones that got WG patched in)
+    # Only build ESP32 envs that got WG patched in, skip debug/dev builds
+    _SKIP_SUFFIXES = ("_debug", "_dbg", "_dev")
     all_envs = get_default_envs(result.patched)
-    envs = [e for e in all_envs if e in result.patched_envs]
-    skipped_8266 = [e for e in all_envs if e not in result.patched_envs]
-    if skipped_8266:
-        print(f"Skipping non-ESP32 envs: {', '.join(skipped_8266)}")
+    envs = [
+        e for e in all_envs
+        if e in result.patched_envs
+        and not any(e.endswith(s) for s in _SKIP_SUFFIXES)
+    ]
+    skipped = [e for e in all_envs if e not in envs]
+    if skipped:
+        print(f"Skipping: {', '.join(skipped)}")
 
     for env_name in envs:
         bin_asset = asset_filename(source_name, version, env_name, ".bin")
