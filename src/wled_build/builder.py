@@ -103,13 +103,17 @@ def _write_build_log_header(
 def _run_single_build(
     wled_dir: Path,
     env_name: str,
+    output_path: Path,
     log_path: Path,
     version: str,
     source: str,
     wled_commit: str,
     quinled_commit: str | None,
-) -> Path | None:
-    """Build one environment, streaming output to terminal and log file."""
+) -> bool:
+    """Build one environment, copy binary to output_path, stream to log file.
+
+    Returns True on success, False on failure.
+    """
     print(f"\n{'=' * 60}")
     print(f"Building: {env_name}")
     print(f"{'=' * 60}")
@@ -130,15 +134,15 @@ def _run_single_build(
         process.wait()
 
     if process.returncode != 0:
-        print(f"FAILED: {env_name} (exit code {process.returncode})")
-        return None
+        raise RuntimeError(f"pio run failed for {env_name} (exit code {process.returncode})")
 
     binary = _find_firmware_binary(wled_dir, env_name)
     if binary is None:
-        print(f"WARNING: No binary found for {env_name}")
-        return None
+        raise RuntimeError(f"No binary found for {env_name} after successful build")
 
-    print(f"OK: {binary.name} ({binary.stat().st_size:,} bytes)")
+    # Copy binary out BEFORE cleaning build artifacts
+    output_path.write_bytes(binary.read_bytes())
+    print(f"OK: {output_path.name} ({output_path.stat().st_size:,} bytes)")
 
     # Clean build artifacts to save disk for next env
     pio_build = wled_dir / ".pio" / "build" / env_name
@@ -148,8 +152,6 @@ def _run_single_build(
     if release_dir.exists():
         for f in release_dir.iterdir():
             f.unlink()
-
-    return binary
 
 
 def build_version(
@@ -266,20 +268,14 @@ def _build_source(
             continue
 
         log_path = log_dir / f"{source_name}_{env_name}.build_log.txt"
-        binary_path = _run_single_build(
-            wled_dir, env_name, log_path,
+        dest = output_dir / asset_filename(source_name, version, env_name, ".bin")
+
+        _run_single_build(
+            wled_dir, env_name, dest, log_path,
             version, source_name, wled_commit, quinled_commit,
         )
 
-        if binary_path is None:
-            print(f"  Build failed for {env_name}, skipping")
-            continue
-
-        # Copy binary to output_dir with the release asset name
-        dest = output_dir / asset_filename(source_name, version, env_name, ".bin")
-        dest.write_bytes(binary_path.read_bytes())
         digest = sha256_file(dest)
-        print(f"  Saved: {dest.name} ({dest.stat().st_size:,} bytes)")
         print(f"  SHA256: {digest}")
 
         # Attest BEFORE publishing — never serve an unattested binary
