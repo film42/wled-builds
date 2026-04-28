@@ -24,12 +24,12 @@ def _get_oidc_token() -> str:
             "Are you running inside GitHub Actions with id-token: write permission?"
         )
 
-    resp = requests.get(
-        f"{request_url}&audience=sigstore",
-        headers={"Authorization": f"Bearer {request_token}"},
-        timeout=30,
-    )
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {request_token}"
+    resp = session.get(f"{request_url}&audience=sigstore", timeout=30)
     resp.raise_for_status()
+    # Clear auth before any exception traceback could capture the session
+    session.close()
     return resp.json()["value"]
 
 
@@ -67,16 +67,18 @@ def attest_file(file_path: Path) -> bool:
 
     bundle_json = json.loads(bundle.to_json())
 
-    resp = requests.post(
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {gh_token}"
+    session.headers["Accept"] = "application/vnd.github+json"
+    resp = session.post(
         f"https://api.github.com/repos/{repo}/attestations",
-        headers={
-            "Authorization": f"Bearer {gh_token}",
-            "Accept": "application/vnd.github+json",
-        },
         json={"bundle": bundle_json},
         timeout=30,
     )
-    resp.raise_for_status()
+    session.close()
+    if not resp.ok:
+        print(f"  Attestation API error {resp.status_code}: {resp.text}")
+        resp.raise_for_status()
 
     print(f"  Attestation: created")
     return True

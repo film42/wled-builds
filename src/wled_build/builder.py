@@ -1,10 +1,10 @@
-"""Clone WLED, apply WireGuard patches, and build firmware.
+"""Clone WLED, apply WireGuard patches, build, attest, and publish firmware.
 
-Flow:
-1. Check if asset already exists on the GitHub Release — skip build if so
-2. Build with PlatformIO, save binary + build log to output dir
-3. (Workflow attests binaries via actions/attest-build-provenance)
-4. Publish step uploads attested binaries to GitHub Release + R2
+Per-env flow:
+1. Check if asset already exists on the GitHub Release — skip if so
+2. Build with PlatformIO
+3. Attest with sigstore (via GitHub OIDC)
+4. Upload to GitHub Release + R2
 """
 
 import hashlib
@@ -40,10 +40,6 @@ def sha256_file(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-
-def sha256_str(s: str) -> str:
-    """Compute SHA-256 hex digest of a string."""
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
 def clone_wled(version: str, parent_dir: Path) -> Path:
@@ -109,10 +105,10 @@ def _run_single_build(
     source: str,
     wled_commit: str,
     quinled_commit: str | None,
-) -> bool:
+):
     """Build one environment, copy binary to output_path, stream to log file.
 
-    Returns True on success, False on failure.
+    Raises RuntimeError on failure.
     """
     print(f"\n{'=' * 60}")
     print(f"Building: {env_name}")
