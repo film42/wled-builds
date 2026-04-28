@@ -66,16 +66,42 @@ def attest_file(file_path: Path) -> bool:
         .predicate_type("https://slsa.dev/provenance/v1")
         .predicate({
             "buildDefinition": {
-                "buildType": "https://github.com/film42/wled-builds",
-                "externalParameters": {},
-                "internalParameters": {},
+                "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+                "externalParameters": {
+                    "workflow": {
+                        "ref": os.environ.get("GITHUB_REF", ""),
+                        "repository": "https://github.com/" + os.environ.get("GITHUB_REPOSITORY", ""),
+                        "path": ".github/workflows/build.yml",
+                    },
+                },
+                "internalParameters": {
+                    "github": {
+                        "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
+                        "repository_id": os.environ.get("GITHUB_REPOSITORY_ID", ""),
+                        "repository_owner_id": os.environ.get("GITHUB_REPOSITORY_OWNER_ID", ""),
+                    },
+                },
+                "resolvedDependencies": [
+                    {
+                        "uri": "git+https://github.com/" + os.environ.get("GITHUB_REPOSITORY", "") + "@" + os.environ.get("GITHUB_REF", ""),
+                        "digest": {
+                            "gitCommit": os.environ.get("GITHUB_SHA", ""),
+                        },
+                    },
+                ],
             },
             "runDetails": {
                 "builder": {
-                    "id": os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+                    "id": "https://github.com/actions/runner/github-hosted",
+                },
+                "metadata": {
+                    "invocationId": os.environ.get("GITHUB_SERVER_URL", "https://github.com")
                     + "/"
                     + os.environ.get("GITHUB_REPOSITORY", "")
-                    + "/.github/workflows/build.yml",
+                    + "/actions/runs/"
+                    + os.environ.get("GITHUB_RUN_ID", "")
+                    + "/attempts/"
+                    + os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
                 },
             },
         })
