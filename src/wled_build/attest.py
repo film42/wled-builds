@@ -56,7 +56,7 @@ def attest_file(file_path: Path) -> bool:
     trust_config = ClientTrustConfig.production()
     signing_ctx = SigningContext.from_trust_config(trust_config)
     with signing_ctx.signer(identity_token) as signer:
-        bundle = signer.sign_artifact(file_path)
+        bundle = signer.sign_artifact(file_path.read_bytes())
 
     # Step 3: POST the attestation bundle to GitHub
     repo = os.environ.get("GITHUB_REPOSITORY")
