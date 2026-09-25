@@ -34,6 +34,15 @@ def _parse_version_tuple(v: str) -> tuple:
     return (*base, 0, pre)
 
 
+def _is_superseded_prerelease(version: str, stable_versions: set[str]) -> bool:
+    """True if version is a pre-release (e.g. "16.0.0-beta") whose base version
+    already has a stable release (e.g. "16.0.0")."""
+    parsed = _parse_version_tuple(version)
+    if len(parsed) < 3 or parsed[-2] != 0:
+        return False
+    return any(_parse_version_tuple(s)[:-2] == parsed[:-2] for s in stable_versions)
+
+
 def _version_gte(version: str, min_version: str) -> bool:
     """Check if version >= min_version."""
     return _parse_version_tuple(version) >= _parse_version_tuple(min_version)
@@ -145,10 +154,17 @@ def cmd_build_new(args):
     # Build each version — the builder itself checks release assets to skip
     # envs that are already published, so we just need to decide which
     # (version, source) pairs to attempt.
+    # Skip betas/RCs once their stable release exists; nobody needs them anymore.
+    # `wled-build build <version>` can still build one explicitly.
+    stable_versions = {r["version"] for r in wled_releases if not r["prerelease"]}
+
     to_build: list[tuple[str, str]] = []
     for r in wled_releases:
         v = r["version"]
         if not _version_gte(v, min_version):
+            continue
+        if _is_superseded_prerelease(v, stable_versions):
+            print(f"  Skipping {v}: superseded by stable release")
             continue
         if want_generic:
             to_build.append((v, "generic"))
