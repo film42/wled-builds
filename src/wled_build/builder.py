@@ -164,10 +164,11 @@ def build_version(
     version: str,
     output_base: Path,
     source: str = "all",
-):
+) -> list[str]:
     """Build and publish WLED firmware for a version.
 
     For each env: check if already published, build if not, upload everywhere.
+    Returns the envs that failed to build, as "source/env".
     """
     output_dir = output_base / version
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -184,11 +185,12 @@ def build_version(
     existing_assets = get_existing_assets(release)
     print(f"Existing release assets: {len(existing_assets)}")
 
+    failed: list[str] = []
     with tempfile.TemporaryDirectory(prefix="wled-build-") as tmp:
         tmp_path = Path(tmp)
 
         if source in ("generic", "all"):
-            _build_source(
+            failed += _build_source(
                 version=version,
                 source_name="generic",
                 wled_commit=wled_commit,
@@ -206,7 +208,7 @@ def build_version(
             if quinled_commit is None:
                 print(f"\nNo QuinLED release for v{version}, skipping.")
             else:
-                _build_source(
+                failed += _build_source(
                     version=version,
                     source_name="quinled",
                     wled_commit=wled_commit,
@@ -220,6 +222,7 @@ def build_version(
                 )
 
     print(f"\nBuild complete. Output in: {output_dir}")
+    return failed
 
 
 def _build_source(
@@ -233,8 +236,8 @@ def _build_source(
     audit_dir: Path,
     release: dict,
     existing_assets: set[str],
-):
-    """Build all envs for a source (generic or quinled)."""
+) -> list[str]:
+    """Build all envs for a source (generic or quinled). Returns failed "source/env" names."""
     print(f"\n--- {source_name} builds ---")
 
     wled_dir = clone_wled(version, tmp_path / source_name)
@@ -244,7 +247,7 @@ def _build_source(
         override_content = fetch_quinled_override(version)
         if override_content is None:
             print(f"No QuinLED platformio_override.ini found for v{version}.")
-            return
+            return []
         usermod_names = [
             p.name for p in (wled_dir / "usermods").iterdir() if p.is_dir()
         ]
@@ -326,3 +329,4 @@ def _build_source(
     if failed:
         print(f"\n{len(failed)} env(s) failed to build: {', '.join(failed)}")
         print("Attest/publish failures are still fatal.")
+    return [f"{source_name}/{e}" for e in failed]

@@ -65,6 +65,16 @@ def get_or_create_release(version: str) -> dict:
         },
         timeout=30,
     )
+    if resp.status_code == 422:
+        # Another job (e.g. a parallel source build) created it first
+        resp = session.get(
+            f"{GITHUB_API}/repos/{REPO}/releases/tags/{tag}",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        release = resp.json()
+        print(f"Found release created concurrently: {tag} (id={release['id']})")
+        return release
     resp.raise_for_status()
     release = resp.json()
     print(f"Created release: {tag} (id={release['id']})")

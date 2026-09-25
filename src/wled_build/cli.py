@@ -2,6 +2,7 @@
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 from .builder import build_version
@@ -117,22 +118,26 @@ def cmd_check(args):
 def cmd_build(args):
     """Build firmware for a specific WLED version."""
     output = Path(args.output)
-    build_version(
+    failed = build_version(
         version=args.version,
         output_base=output,
         source=args.source,
     )
+    _exit_on_failures(failed)
 
 
 def cmd_build_new(args):
     """Build any upstream releases >= min-version that we haven't built yet."""
     output = Path(args.output)
     min_version = args.min_version
+    want_generic = args.source in ("generic", "all")
+    want_quinled = args.source in ("quinled", "all")
 
     print("Fetching upstream releases...")
     wled_releases = get_wled_releases()
-    quinled_releases = get_quinled_releases()
-    quinled_versions = {r["version"] for r in quinled_releases}
+    quinled_versions = (
+        {r["version"] for r in get_quinled_releases()} if want_quinled else set()
+    )
 
     wled_latest = get_latest_stable(WLED_REPO)
     print(f"  WLED latest stable: {wled_latest['version'] if wled_latest else '?'}")
@@ -145,7 +150,8 @@ def cmd_build_new(args):
         v = r["version"]
         if not _version_gte(v, min_version):
             continue
-        to_build.append((v, "generic"))
+        if want_generic:
+            to_build.append((v, "generic"))
         if v in quinled_versions:
             to_build.append((v, "quinled"))
 
@@ -161,11 +167,26 @@ def cmd_build_new(args):
     for v, source in to_build:
         print(f"  {v:>14s}  {source}")
 
+    failed: list[str] = []
     for v, source in to_build:
         print(f"\n{'#' * 60}")
         print(f"# {source} targets for {v}")
         print(f"{'#' * 60}")
-        build_version(version=v, output_base=output, source=source)
+        failed += [
+            f"{v} {f}"
+            for f in build_version(version=v, output_base=output, source=source)
+        ]
+    _exit_on_failures(failed)
+
+
+def _exit_on_failures(failed: list[str]):
+    """Print a failure summary and exit non-zero so CI marks the job failed."""
+    if not failed:
+        return
+    print(f"\n{len(failed)} build(s) failed:")
+    for f in failed:
+        print(f"  {f}")
+    sys.exit(1)
 
 
 def main():
@@ -216,6 +237,12 @@ def main():
         "--output",
         default="build_output",
         help="Output directory (default: build_output)",
+    )
+    p_new.add_argument(
+        "--source",
+        choices=["generic", "quinled", "all"],
+        default="all",
+        help="Which target sets to build (default: all)",
     )
     p_new.add_argument(
         "--min-version",

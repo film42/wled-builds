@@ -9,7 +9,7 @@ on:
         type: string
         default: "new"
       source:
-        description: "Target set (ignored when version is 'new')"
+        description: "Target set to build"
         required: true
         type: choice
         options:
@@ -28,8 +28,21 @@ permissions:
 
 jobs:
   build:
+    name: build (${{ matrix.source }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
+
+    # One job per target set, so one failing doesn't hide or block the other.
+    # Scheduled runs have no inputs and build every set.
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ${{ fromJSON((inputs.source == '' || inputs.source == 'all') && '["generic", "quinled"]' || format('["{0}"]', inputs.source)) }}
+
+    # Don't let a manual run and the scheduled run race on the same uploads
+    concurrency:
+      group: build-${{ matrix.source }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -60,18 +73,16 @@ jobs:
         run: |
           VERSION="${{ inputs.version || 'new' }}"
           if [ "$VERSION" = "new" ]; then
-            uv run wled-build build-new --output build_output
+            uv run wled-build build-new --source "${{ matrix.source }}" --output build_output
           else
-            uv run wled-build build "$VERSION" \
-              --source "${{ inputs.source || 'all' }}" \
-              --output build_output
+            uv run wled-build build "$VERSION" --source "${{ matrix.source }}" --output build_output
           fi
 
       - name: Upload audit trail
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: audit-${{ github.run_id }}
+          name: audit-${{ github.run_id }}-${{ matrix.source }}
           path: |
             build_output/**/audit/
             build_output/**/logs/
@@ -80,7 +91,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Summary (${{ matrix.source }})" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           find build_output -name "*.bin" -exec sh -c 'echo "$(sha256sum "$1" | cut -d" " -f1)  $(basename "$1")"' _ {} \; | sort >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No binaries"
           echo '```' >> $GITHUB_STEP_SUMMARY
