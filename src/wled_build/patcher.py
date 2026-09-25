@@ -172,3 +172,55 @@ def get_default_envs(ini_content: str) -> list[str]:
 
     # Fallback: all [env:*] sections
     return [s[4:] for s in parser.sections() if s.startswith("env:")]
+
+
+_USERMOD_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def fix_usermod_case(ini_content: str, usermod_names: list[str]) -> tuple[str, list[str]]:
+    """Rewrite custom_usermods tokens to match the real usermods/ folder casing.
+
+    WLED's load_usermods.py looks up folders with an exact-case path check, so
+    a name like "temperature" only resolves to usermods/Temperature on
+    case-insensitive filesystems (Windows/macOS). QuinLED's override uses
+    lowercase names, which breaks on Linux CI.
+
+    Returns the updated content and a list of "old -> new" fixes applied.
+    """
+    existing = set(usermod_names)
+    by_lower = {n.lower(): n for n in usermod_names}
+    fixes: list[str] = []
+
+    def resolve(tok: str) -> str:
+        # Mirror find_usermod's candidate order: name, name_v2, usermod_v2_name
+        candidates = [tok, f"{tok}_v2", f"usermod_v2_{tok}"]
+        if any(c in existing for c in candidates):
+            return tok
+        for c in candidates:
+            actual = by_lower.get(c.lower())
+            if actual:
+                fixes.append(f"{tok} -> {actual}")
+                return actual
+        return tok
+
+    def fix_value(value: str) -> str:
+        # Leave URLs and "name = spec" entries alone; only touch bare names
+        return " ".join(
+            resolve(t) if _USERMOD_TOKEN.fullmatch(t) else t
+            for t in value.split(" ")
+        )
+
+    key_re = re.compile(r"^(\s*custom_usermods\s*=)(.*)$")
+    lines = ini_content.split("\n")
+    in_value = False
+    for i, line in enumerate(lines):
+        m = key_re.match(line)
+        if m:
+            lines[i] = m.group(1) + fix_value(m.group(2))
+            in_value = True
+        elif in_value and line and line[0].isspace() and not line.strip().startswith(("#", ";")):
+            lines[i] = fix_value(line)
+        else:
+            in_value = False
+
+    return "\n".join(lines), fixes

@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .patcher import get_default_envs, patch_ini
+from .patcher import fix_usermod_case, get_default_envs, patch_ini
 from .attest import attest_file
 from .publish import (
     asset_filename,
@@ -235,8 +235,12 @@ def _build_source(
         if override_content is None:
             print(f"No QuinLED platformio_override.ini found for v{version}.")
             return
-        result = patch_ini(override_content)
-        (audit_dir / "quinled_original_override.ini").write_text(result.original)
+        usermod_names = [p.name for p in (wled_dir / "usermods").iterdir() if p.is_dir()]
+        fixed_content, usermod_fixes = fix_usermod_case(override_content, usermod_names)
+        if usermod_fixes:
+            print(f"Fixed usermod name casing: {', '.join(sorted(set(usermod_fixes)))}")
+        result = patch_ini(fixed_content)
+        (audit_dir / "quinled_original_override.ini").write_text(override_content)
         (audit_dir / "quinled_patched_override.ini").write_text(result.patched)
         (wled_dir / "platformio_override.ini").write_text(result.patched)
     else:
