@@ -31,6 +31,10 @@ from .upstream import (
 
 WLED_GIT_URL = "https://github.com/wled/WLED.git"
 
+# The WireGuard usermod registers its config/info under this key, so the string
+# lands in the firmware only if the usermod was actually compiled in.
+WG_BINARY_MARKER = b"WireGuard"
+
 
 def sha256_file(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
@@ -159,6 +163,14 @@ def _run_single_build(
         for f in release_dir.iterdir():
             f.unlink()
 
+    # Never publish a "WireGuard" build that doesn't contain WireGuard
+    if WG_BINARY_MARKER not in output_path.read_bytes():
+        output_path.unlink()
+        raise RuntimeError(
+            f"WireGuard not found in {env_name} firmware; usermod was not compiled in"
+        )
+    print("  WireGuard: found in firmware")
+
 
 def build_version(
     version: str,
@@ -241,6 +253,10 @@ def _build_source(
     print(f"\n--- {source_name} builds ---")
 
     wled_dir = clone_wled(version, tmp_path / source_name)
+    # WLED 16+ ships WireGuard as a library-style usermod enabled via custom_usermods
+    wg_usermod = (wled_dir / "usermods" / "wireguard" / "library.json").exists()
+    if wg_usermod:
+        print("WireGuard mode: custom_usermods (WLED 16+)")
 
     # Get and patch the INI
     if source_name == "quinled":
@@ -254,14 +270,18 @@ def _build_source(
         fixed_content, usermod_fixes = fix_usermod_case(override_content, usermod_names)
         if usermod_fixes:
             print(f"Fixed usermod name casing: {', '.join(sorted(set(usermod_fixes)))}")
-        result = patch_ini(fixed_content)
+        result = patch_ini(
+            fixed_content,
+            wg_usermod=wg_usermod,
+            base_ini=(wled_dir / "platformio.ini").read_text(),
+        )
         (audit_dir / "quinled_original_override.ini").write_text(override_content)
         (audit_dir / "quinled_patched_override.ini").write_text(result.patched)
         (wled_dir / "platformio_override.ini").write_text(result.patched)
     else:
         ini_path = wled_dir / "platformio.ini"
         ini_content = ini_path.read_text()
-        result = patch_ini(ini_content)
+        result = patch_ini(ini_content, wg_usermod=wg_usermod)
         (audit_dir / "generic_original_platformio.ini").write_text(result.original)
         (audit_dir / "generic_patched_platformio.ini").write_text(result.patched)
         ini_path.write_text(result.patched)

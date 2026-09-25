@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 
 WG_BUILD_FLAG = "-D USERMOD_WIREGUARD"
 WG_LIB_DEP = "https://github.com/kienvu58/WireGuard-ESP32-Arduino.git"
+# WLED 16+ compiles usermods only when listed in custom_usermods; the
+# USERMOD_WIREGUARD flag is ignored there.
+WG_USERMOD = "wireguard"
 
 # Substrings that indicate ESP8266 hardware (not WireGuard-capable)
 _ESP8266_INDICATORS = frozenset(
@@ -103,12 +106,100 @@ def _patch_section_lines(lines: list[str]) -> list[str]:
     return result
 
 
-def patch_ini(content: str) -> PatchResult:
+def _make_parser():
+    import configparser
+
+    parser = configparser.RawConfigParser(
+        inline_comment_prefixes=(),  # don't eat # or ; mid-value
+        comment_prefixes=("#", ";"),  # only full-line comments
+        strict=False,
+    )
+    parser.optionxform = str  # preserve case (PlatformIO is case-sensitive)
+    return parser
+
+
+def _strip_inline_comment(line: str) -> str:
+    """Drop PlatformIO-style inline comments (whitespace then ; or #)."""
+    return re.sub(r"\s+[;#].*$", "", line).strip()
+
+
+def _effective_option(parser, section: str, key: str) -> str | None:
+    """Resolve an option the way PlatformIO does: own value, then each
+    `extends` parent in order, then the [env] base section for env:* sections."""
+    seen: set[str] = set()
+
+    def resolve(sec: str) -> str | None:
+        if sec in seen or not parser.has_section(sec):
+            return None
+        seen.add(sec)
+        if parser.has_option(sec, key):
+            return parser.get(sec, key)
+        if parser.has_option(sec, "extends"):
+            for parent in parser.get(sec, "extends").split(","):
+                value = resolve(parent.strip())
+                if value is not None:
+                    return value
+        return None
+
+    value = resolve(section)
+    if value is None and section.startswith("env:") and parser.has_option("env", key):
+        value = parser.get("env", key)
+    return value
+
+
+def _add_wireguard_usermod(
+    section_lines: list[str], inherited: str | None
+) -> list[str]:
+    """Set custom_usermods in this section to its effective value plus wireguard."""
+    entries = [_strip_inline_comment(l) for l in (inherited or "").split("\n")]
+    entries = [e for e in entries if e]
+    tokens = " ".join(entries).split()
+    if WG_USERMOD in tokens or "*" in tokens:
+        return list(section_lines)
+
+    result = list(section_lines)
+    end = _find_value_end(result, "custom_usermods")
+    if end is not None:
+        start = next(
+            i
+            for i in range(end, -1, -1)
+            if re.match(r"^\s*custom_usermods\s*=", result[i])
+        )
+        del result[start : end + 1]
+        insert_at = start
+    else:
+        insert_at = 1
+
+    # Keep one entry per line so external URL entries stay intact
+    new_lines = [f"custom_usermods = {entries[0]}" if entries else "custom_usermods ="]
+    new_lines += [f"  {e}" for e in entries[1:]]
+    new_lines.append(f"  {WG_USERMOD}")
+    result[insert_at:insert_at] = new_lines
+    return result
+
+
+def patch_ini(
+    content: str,
+    wg_usermod: bool = False,
+    base_ini: str | None = None,
+) -> PatchResult:
     """Add WireGuard to all ESP32-based [env:*] sections in a PlatformIO INI.
 
     ESP8266 environments and environments that already have WireGuard are skipped.
     Non-env sections ([platformio], [common], etc.) are passed through unchanged.
+
+    With wg_usermod (WLED 16+), WireGuard is added to each env's effective
+    custom_usermods instead of via build flag. base_ini is the platformio.ini
+    that `content` layers on top of (for platformio_override.ini), used to
+    resolve inherited values.
     """
+    parser = None
+    if wg_usermod:
+        parser = _make_parser()
+        if base_ini is not None:
+            parser.read_string(base_ini)
+        parser.read_string(content)
+
     lines = content.split("\n")
     result_lines: list[str] = []
     patched_envs: list[str] = []
@@ -140,6 +231,11 @@ def patch_ini(content: str) -> PatchResult:
         if _is_esp8266(section_text, env_name) or _has_wireguard(section_text):
             skipped_envs.append(env_name)
             result_lines.extend(section_lines)
+        elif wg_usermod:
+            inherited = _effective_option(parser, f"env:{env_name}", "custom_usermods")
+            patched = _add_wireguard_usermod(section_lines, inherited)
+            patched_envs.append(env_name)
+            result_lines.extend(patched)
         else:
             patched = _patch_section_lines(section_lines)
             patched_envs.append(env_name)
