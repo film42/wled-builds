@@ -57,54 +57,66 @@ def attest_file(file_path: Path) -> bool:
     # Build an in-toto statement with the file as subject
     statement = (
         StatementBuilder()
-        .subjects([
-            Subject(
-                name=file_path.name,
-                digest=DigestSet(root={"sha256": digest}),
-            )
-        ])
+        .subjects(
+            [
+                Subject(
+                    name=file_path.name,
+                    digest=DigestSet(root={"sha256": digest}),
+                )
+            ]
+        )
         .predicate_type("https://slsa.dev/provenance/v1")
-        .predicate({
-            "buildDefinition": {
-                "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
-                "externalParameters": {
-                    "workflow": {
-                        "ref": os.environ.get("GITHUB_REF", ""),
-                        "repository": "https://github.com/" + os.environ.get("GITHUB_REPOSITORY", ""),
-                        "path": ".github/workflows/build.yml",
-                    },
-                },
-                "internalParameters": {
-                    "github": {
-                        "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
-                        "repository_id": os.environ.get("GITHUB_REPOSITORY_ID", ""),
-                        "repository_owner_id": os.environ.get("GITHUB_REPOSITORY_OWNER_ID", ""),
-                    },
-                },
-                "resolvedDependencies": [
-                    {
-                        "uri": "git+https://github.com/" + os.environ.get("GITHUB_REPOSITORY", "") + "@" + os.environ.get("GITHUB_REF", ""),
-                        "digest": {
-                            "gitCommit": os.environ.get("GITHUB_SHA", ""),
+        .predicate(
+            {
+                "buildDefinition": {
+                    "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+                    "externalParameters": {
+                        "workflow": {
+                            "ref": os.environ.get("GITHUB_REF", ""),
+                            "repository": "https://github.com/"
+                            + os.environ.get("GITHUB_REPOSITORY", ""),
+                            "path": ".github/workflows/build.yml",
                         },
                     },
-                ],
-            },
-            "runDetails": {
-                "builder": {
-                    "id": "https://github.com/actions/runner/github-hosted",
+                    "internalParameters": {
+                        "github": {
+                            "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
+                            "repository_id": os.environ.get("GITHUB_REPOSITORY_ID", ""),
+                            "repository_owner_id": os.environ.get(
+                                "GITHUB_REPOSITORY_OWNER_ID", ""
+                            ),
+                        },
+                    },
+                    "resolvedDependencies": [
+                        {
+                            "uri": "git+https://github.com/"
+                            + os.environ.get("GITHUB_REPOSITORY", "")
+                            + "@"
+                            + os.environ.get("GITHUB_REF", ""),
+                            "digest": {
+                                "gitCommit": os.environ.get("GITHUB_SHA", ""),
+                            },
+                        },
+                    ],
                 },
-                "metadata": {
-                    "invocationId": os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-                    + "/"
-                    + os.environ.get("GITHUB_REPOSITORY", "")
-                    + "/actions/runs/"
-                    + os.environ.get("GITHUB_RUN_ID", "")
-                    + "/attempts/"
-                    + os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
+                "runDetails": {
+                    "builder": {
+                        "id": "https://github.com/actions/runner/github-hosted",
+                    },
+                    "metadata": {
+                        "invocationId": os.environ.get(
+                            "GITHUB_SERVER_URL", "https://github.com"
+                        )
+                        + "/"
+                        + os.environ.get("GITHUB_REPOSITORY", "")
+                        + "/actions/runs/"
+                        + os.environ.get("GITHUB_RUN_ID", "")
+                        + "/attempts/"
+                        + os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
+                    },
                 },
-            },
-        })
+            }
+        )
         .build()
     )
 
@@ -130,7 +142,9 @@ def attest_file(file_path: Path) -> bool:
     print(f"  Bundle mediaType: {bundle_json.get('mediaType', 'MISSING')}")
     print(f"  Bundle top-level keys: {list(bundle_json.keys())}")
     if "dsseEnvelope" in bundle_json:
-        print(f"  dsseEnvelope payloadType: {bundle_json['dsseEnvelope'].get('payloadType', 'MISSING')}")
+        print(
+            f"  dsseEnvelope payloadType: {bundle_json['dsseEnvelope'].get('payloadType', 'MISSING')}"
+        )
     else:
         print(f"  WARNING: no dsseEnvelope in bundle")
 

@@ -11,14 +11,22 @@ WG_BUILD_FLAG = "-D USERMOD_WIREGUARD"
 WG_LIB_DEP = "https://github.com/kienvu58/WireGuard-ESP32-Arduino.git"
 
 # Substrings that indicate ESP8266 hardware (not WireGuard-capable)
-_ESP8266_INDICATORS = frozenset([
-    "esp8266", "esp01", "esp02", "nodemcu", "d1_mini", "d1mini",
-])
+_ESP8266_INDICATORS = frozenset(
+    [
+        "esp8266",
+        "esp01",
+        "esp02",
+        "nodemcu",
+        "d1_mini",
+        "d1mini",
+    ]
+)
 
 
 @dataclass
 class PatchResult:
     """Result of patching an INI file."""
+
     original: str
     patched: str
     patched_envs: list[str] = field(default_factory=list)
@@ -154,7 +162,7 @@ def get_default_envs(ini_content: str) -> list[str]:
     import configparser
 
     parser = configparser.RawConfigParser(
-        inline_comment_prefixes=(),   # don't eat # or ; mid-value
+        inline_comment_prefixes=(),  # don't eat # or ; mid-value
         comment_prefixes=("#", ";"),  # only full-line comments
     )
     parser.optionxform = str  # preserve case (PlatformIO is case-sensitive)
@@ -177,7 +185,9 @@ def get_default_envs(ini_content: str) -> list[str]:
 _USERMOD_TOKEN = re.compile(r"[A-Za-z0-9_]+")
 
 
-def fix_usermod_case(ini_content: str, usermod_names: list[str]) -> tuple[str, list[str]]:
+def fix_usermod_case(
+    ini_content: str, usermod_names: list[str]
+) -> tuple[str, list[str]]:
     """Rewrite custom_usermods tokens to match the real usermods/ folder casing.
 
     WLED's load_usermods.py looks up folders with an exact-case path check, so
@@ -206,8 +216,7 @@ def fix_usermod_case(ini_content: str, usermod_names: list[str]) -> tuple[str, l
     def fix_value(value: str) -> str:
         # Leave URLs and "name = spec" entries alone; only touch bare names
         return " ".join(
-            resolve(t) if _USERMOD_TOKEN.fullmatch(t) else t
-            for t in value.split(" ")
+            resolve(t) if _USERMOD_TOKEN.fullmatch(t) else t for t in value.split(" ")
         )
 
     key_re = re.compile(r"^(\s*custom_usermods\s*=)(.*)$")
@@ -218,7 +227,12 @@ def fix_usermod_case(ini_content: str, usermod_names: list[str]) -> tuple[str, l
         if m:
             lines[i] = m.group(1) + fix_value(m.group(2))
             in_value = True
-        elif in_value and line and line[0].isspace() and not line.strip().startswith(("#", ";")):
+        elif (
+            in_value
+            and line
+            and line[0].isspace()
+            and not line.strip().startswith(("#", ";"))
+        ):
             lines[i] = fix_value(line)
         else:
             in_value = False

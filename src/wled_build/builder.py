@@ -41,7 +41,6 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-
 def clone_wled(version: str, parent_dir: Path) -> Path:
     """Shallow-clone WLED at a specific version tag."""
     wled_dir = parent_dir / "WLED"
@@ -49,9 +48,12 @@ def clone_wled(version: str, parent_dir: Path) -> Path:
     print(f"Cloning WLED v{version} into {wled_dir}...")
     subprocess.run(
         [
-            "git", "clone",
-            "--depth", "1",
-            "--branch", f"v{version}",
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            f"v{version}",
             WLED_GIT_URL,
             str(wled_dir),
         ],
@@ -87,8 +89,12 @@ def _write_build_log_header(
     log_file.write(f"Source: wled/WLED @ v{version} ({wled_commit})\n")
     log_file.write(f"  https://github.com/wled/WLED/tree/{wled_commit}\n")
     if quinled_commit:
-        log_file.write(f"Config: intermittech/QuinLED-Firmware @ v{version} ({quinled_commit})\n")
-        log_file.write(f"  https://github.com/intermittech/QuinLED-Firmware/tree/{quinled_commit}\n")
+        log_file.write(
+            f"Config: intermittech/QuinLED-Firmware @ v{version} ({quinled_commit})\n"
+        )
+        log_file.write(
+            f"  https://github.com/intermittech/QuinLED-Firmware/tree/{quinled_commit}\n"
+        )
     log_file.write(f"Environment: {env_name}\n")
     log_file.write(f"Vendor: {source}\n")
     log_file.write(f"WireGuard: yes\n")
@@ -115,7 +121,9 @@ def _run_single_build(
     print(f"{'=' * 60}")
 
     with open(log_path, "w") as log_file:
-        _write_build_log_header(log_file, version, source, env_name, wled_commit, quinled_commit)
+        _write_build_log_header(
+            log_file, version, source, env_name, wled_commit, quinled_commit
+        )
 
         process = subprocess.Popen(
             ["pio", "run", "-e", env_name],
@@ -130,7 +138,9 @@ def _run_single_build(
         process.wait()
 
     if process.returncode != 0:
-        raise RuntimeError(f"pio run failed for {env_name} (exit code {process.returncode})")
+        raise RuntimeError(
+            f"pio run failed for {env_name} (exit code {process.returncode})"
+        )
 
     binary = _find_firmware_binary(wled_dir, env_name)
     if binary is None:
@@ -235,7 +245,9 @@ def _build_source(
         if override_content is None:
             print(f"No QuinLED platformio_override.ini found for v{version}.")
             return
-        usermod_names = [p.name for p in (wled_dir / "usermods").iterdir() if p.is_dir()]
+        usermod_names = [
+            p.name for p in (wled_dir / "usermods").iterdir() if p.is_dir()
+        ]
         fixed_content, usermod_fixes = fix_usermod_case(override_content, usermod_names)
         if usermod_fixes:
             print(f"Fixed usermod name casing: {', '.join(sorted(set(usermod_fixes)))}")
@@ -258,9 +270,9 @@ def _build_source(
     _SKIP_SUFFIXES = ("_debug", "_dbg", "_dev")
     all_envs = get_default_envs(result.patched)
     envs = [
-        e for e in all_envs
-        if e in result.patched_envs
-        and not any(e.endswith(s) for s in _SKIP_SUFFIXES)
+        e
+        for e in all_envs
+        if e in result.patched_envs and not any(e.endswith(s) for s in _SKIP_SUFFIXES)
     ]
     skipped = [e for e in all_envs if e not in envs]
     if skipped:
@@ -279,8 +291,14 @@ def _build_source(
         # Build — if pio fails, log it and move on to next env
         try:
             _run_single_build(
-                wled_dir, env_name, dest, log_path,
-                version, source_name, wled_commit, quinled_commit,
+                wled_dir,
+                env_name,
+                dest,
+                log_path,
+                version,
+                source_name,
+                wled_commit,
+                quinled_commit,
             )
         except RuntimeError as e:
             print(f"\n  BUILD FAILED: {env_name} — {e}")

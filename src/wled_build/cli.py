@@ -5,7 +5,13 @@ import re
 from pathlib import Path
 
 from .builder import build_version
-from .upstream import get_latest_stable, get_quinled_releases, get_wled_releases, WLED_REPO, QUINLED_REPO
+from .upstream import (
+    get_latest_stable,
+    get_quinled_releases,
+    get_wled_releases,
+    WLED_REPO,
+    QUINLED_REPO,
+)
 
 # Only build versions >= this. Older versions predate ESP32 WireGuard support.
 DEFAULT_MIN_VERSION = "0.15.4"
@@ -39,6 +45,7 @@ def cmd_check(args):
     not a local manifest file.
     """
     from .publish import get_or_create_release, get_existing_assets
+
     min_version = args.min_version
 
     print("Fetching upstream releases...")
@@ -48,8 +55,12 @@ def cmd_check(args):
     wled_latest = get_latest_stable(WLED_REPO)
     quinled_latest = get_latest_stable(QUINLED_REPO)
 
-    print(f"  WLED:    {len(wled_releases)} releases, latest stable: {wled_latest['version'] if wled_latest else '?'}")
-    print(f"  QuinLED: {len(quinled_releases)} releases, latest stable: {quinled_latest['version'] if quinled_latest else '?'}")
+    print(
+        f"  WLED:    {len(wled_releases)} releases, latest stable: {wled_latest['version'] if wled_latest else '?'}"
+    )
+    print(
+        f"  QuinLED: {len(quinled_releases)} releases, latest stable: {quinled_latest['version'] if quinled_latest else '?'}"
+    )
 
     quinled_versions = {r["version"] for r in quinled_releases}
 
@@ -73,6 +84,7 @@ def cmd_check(args):
         # or if it's missing assets. For the check command, just see if the
         # release tag exists.
         from .publish import GITHUB_API, REPO, _session
+
         resp = _session().get(
             f"{GITHUB_API}/repos/{REPO}/releases/tags/v{v}",
             timeout=30,
@@ -143,7 +155,9 @@ def cmd_build_new(args):
         print(f"\nNo releases >= {min_version} found.")
         return
 
-    print(f"\nWill attempt {len(to_build)} build(s) (already-published envs will be skipped):")
+    print(
+        f"\nWill attempt {len(to_build)} build(s) (already-published envs will be skipped):"
+    )
     for v, source in to_build:
         print(f"  {v:>14s}  {source}")
 
@@ -167,7 +181,8 @@ def main():
         help="Show upstream releases not yet in our manifest",
     )
     p_check.add_argument(
-        "--min-version", default=DEFAULT_MIN_VERSION,
+        "--min-version",
+        default=DEFAULT_MIN_VERSION,
         help=f"Only show versions >= this (default: {DEFAULT_MIN_VERSION})",
     )
 
@@ -187,7 +202,8 @@ def main():
         help="Which target sets to build (default: all)",
     )
     p_build.add_argument(
-        "--output", default="build_output",
+        "--output",
+        default="build_output",
         help="Output directory (default: build_output)",
     )
 
@@ -197,11 +213,13 @@ def main():
         help="Build any upstream releases we haven't built yet (stable + beta)",
     )
     p_new.add_argument(
-        "--output", default="build_output",
+        "--output",
+        default="build_output",
         help="Output directory (default: build_output)",
     )
     p_new.add_argument(
-        "--min-version", default=DEFAULT_MIN_VERSION,
+        "--min-version",
+        default=DEFAULT_MIN_VERSION,
         help=f"Only build versions >= this (default: {DEFAULT_MIN_VERSION})",
     )
 

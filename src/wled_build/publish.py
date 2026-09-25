@@ -105,7 +105,9 @@ def upload_release_asset(release: dict, filepath: str, filename: str) -> bool:
     with open(filepath, "rb") as f:
         data = f.read()
 
-    content_type = "text/plain" if filename.endswith(".txt") else "application/octet-stream"
+    content_type = (
+        "text/plain" if filename.endswith(".txt") else "application/octet-stream"
+    )
     resp = session.post(
         upload_url,
         headers={"Content-Type": content_type},
